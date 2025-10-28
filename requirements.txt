@@ -1,0 +1,9 @@
+ultralytics==8.3.12
+opencv-python
+streamlit
+pandas
+numpy
+matplotlib
+filterpy
+scikit-learn
+lap
