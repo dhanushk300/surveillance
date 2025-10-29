@@ -1,9 +1,7 @@
-# app.py
 import streamlit as st
 import cv2
 import os
 import time
-import tempfile
 import pandas as pd
 from ultralytics import YOLO
 from PIL import Image
@@ -13,154 +11,138 @@ MODEL_PATH = "yolov8n.pt"   # change to your custom weights later
 LOG_CSV = "detections.csv"
 CAPTURE_DIR = "captured_images"
 IMG_SAVE_QUALITY = 90
-FPS_SLEEP = 0.03  # loop delay
+FPS_SLEEP = 0.03
 # --------------------------
 
-st.set_page_config(page_title="Smart Desk Surveillance (Advanced)", layout="wide")
+st.set_page_config(page_title="Smart Desk Surveillance", layout="wide")
+st.title("🧠 Smart Desk Surveillance System")
+st.markdown("Real-time monitoring — Object Detection & Person Surveillance")
 
-st.title("🧠 Smart Desk Surveillance — Advanced")
-st.markdown("Real-time detection + live analytics + alerts + screenshot capture")
+# Sidebar navigation
+mode = st.sidebar.radio("Select Mode", ["🏷 Object Detection", "🧍 Person Surveillance"])
 
-# Sidebar controls (single creation; unique keys)
-st.sidebar.header("Camera & Detection")
-confidence = st.sidebar.slider("Min confidence", 0.25, 1.0, 0.5, key="conf")
-start_camera = st.sidebar.checkbox("Start Camera", value=False, key="start_cam")
-save_screenshots = st.sidebar.checkbox("Save screenshots on alert", value=True, key="save_ss")
-alert_objects = st.sidebar.multiselect("Alert when these objects appear", options=[
-    "person", "cell phone", "book", "bottle", "laptop"], default=["cell phone"], key="alerts")
-snapshot_seconds = st.sidebar.number_input("Min seconds between snapshots (per object)", min_value=1, max_value=600, value=10, key="snapsec")
-
-# Ensure folders and files exist
+# Ensure directories exist
 os.makedirs(CAPTURE_DIR, exist_ok=True)
 if not os.path.exists(LOG_CSV):
     pd.DataFrame(columns=["timestamp","object","confidence","x1","y1","x2","y2"]).to_csv(LOG_CSV, index=False)
 
-# Load model
-@st.cache_resource
-def load_model(path):
-    return YOLO(path)
+# -------------------------------
+# MODE 1: OBJECT DETECTION
+# -------------------------------
+if mode == "🏷 Object Detection":
+    st.header("🎯 Real-Time Object Detection")
+    confidence = st.slider("Detection confidence", 0.25, 1.0, 0.5)
+    start_camera = st.checkbox("Start Camera")
 
-model = load_model(MODEL_PATH)
+    @st.cache_resource
+    def load_model(path):
+        return YOLO(path)
 
-# placeholders for UI
-left_col, right_col = st.columns((2, 1))
-frame_placeholder = left_col.empty()
-chart_placeholder = right_col.empty()
-events_placeholder = right_col.empty()
-summary_placeholder = st.container()
+    model = load_model(MODEL_PATH)
 
-# helper: append detection to CSV
-def log_detection(obj_name, conf, bbox):
-    row = {
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "object": obj_name,
-        "confidence": round(float(conf), 3),
-        "x1": int(bbox[0]), "y1": int(bbox[1]), "x2": int(bbox[2]), "y2": int(bbox[3])
-    }
-    df = pd.DataFrame([row])
-    df.to_csv(LOG_CSV, mode="a", header=False, index=False)
+    frame_placeholder = st.empty()
+    chart_placeholder = st.empty()
+    events_placeholder = st.empty()
 
-# helper: read recent events
-def read_events(n=20):
-    try:
-        df = pd.read_csv(LOG_CSV)
-        return df.tail(n)
-    except:
-        return pd.DataFrame(columns=["timestamp","object","confidence"])
+    def log_detection(obj_name, conf, bbox):
+        row = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "object": obj_name,
+            "confidence": round(float(conf), 3),
+            "x1": int(bbox[0]), "y1": int(bbox[1]), "x2": int(bbox[2]), "y2": int(bbox[3])
+        }
+        pd.DataFrame([row]).to_csv(LOG_CSV, mode="a", header=False, index=False)
 
-# helper: save captured frame for object
-last_snapshot_time = {}  # in-memory throttle per object
+    if start_camera:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            st.error("⚠ Camera not found. Check permissions.")
+        else:
+            st.success("✅ Camera started successfully.")
 
-def maybe_save_snapshot(obj_name, frame):
-    now = time.time()
-    last = last_snapshot_time.get(obj_name, 0)
-    if now - last < snapshot_seconds:
-        return None
-    # save
-    fname = f"{obj_name}_{int(now)}.jpg"
-    path = os.path.join(CAPTURE_DIR, fname)
-    Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).save(path, quality=IMG_SAVE_QUALITY)
-    last_snapshot_time[obj_name] = now
-    return path
+        while start_camera:
+            ret, frame = cap.read()
+            if not ret:
+                st.warning("Frame not available.")
+                break
 
-# run camera loop when checkbox ON
-if start_camera:
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        st.error("Could not open camera. Check permissions.")
+            results = model(frame, conf=confidence)
+            annotated = results[0].plot()
+
+            for box in results[0].boxes:
+                cls_id = int(box.cls[0].item())
+                name = model.names[cls_id]
+                conf_score = float(box.conf[0].item())
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                log_detection(name, conf_score, (x1,y1,x2,y2))
+
+            frame_placeholder.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_column_width=True)
+
+            df_all = pd.read_csv(LOG_CSV)
+            counts = df_all['object'].value_counts().rename_axis('object').reset_index(name='count')
+            if counts.shape[0] > 0:
+                chart_placeholder.bar_chart(data=counts.set_index('object'))
+            else:
+                chart_placeholder.text("No detections yet")
+
+            events_placeholder.dataframe(df_all.tail(10)[::-1])
+            time.sleep(FPS_SLEEP)
+
+        cap.release()
     else:
-        try:
-            while st.session_state.start_cam:
-                ret, frame = cap.read()
-                if not ret:
-                    st.warning("Camera frame not available.")
-                    break
+        st.info("☝ Tick 'Start Camera' to begin detection.")
 
-                # Detect
-                results = model(frame, conf=confidence)
-                annotated = results[0].plot()
+# -------------------------------
+# MODE 2: PERSON SURVEILLANCE
+# -------------------------------
+elif mode == "🧍 Person Surveillance":
+    st.header("🧍 Real-Time Person Surveillance")
+    st.markdown("📸 The camera feed will appear below. If a person is detected, it shows 🟢; otherwise 🔴.")
 
-                # Write detection logs and handle alerts
-                detected_names = []
-                for box in results[0].boxes:
-                    cls_id = int(box.cls[0].item())
-                    name = model.names[cls_id]
-                    conf_score = float(box.conf[0].item())
-                    x1,y1,x2,y2 = map(int, box.xyxy[0].tolist())
+    start_surveillance = st.checkbox("Enable Surveillance Camera")
+    FRAME_WINDOW = st.image([])
+    status_text = st.empty()
 
-                    detected_names.append(name)
-                    # log every detection row (you can change to only log once per ID)
-                    log_detection(name, conf_score, (x1,y1,x2,y2))
+    if start_surveillance:
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        cap = cv2.VideoCapture(0)
 
-                    # Alert + screenshot
-                    if name in alert_objects:
-                        saved = None
-                        if save_screenshots:
-                            saved = maybe_save_snapshot(name, frame)
-                        # show banner (visual alert)
-                        st.experimental_set_query_params()  # trigger rerun safety
-                        st.sidebar.warning(f"ALERT: {name} detected (conf={conf_score:.2f})")
-                        if saved:
-                            st.sidebar.info(f"Saved snapshot: {saved}")
+        if not cap.isOpened():
+            st.error("❌ Cannot access webcam.")
+        else:
+            st.success("✅ Surveillance Active — Stay in front of camera.")
 
-                # update frame
-                frame_placeholder.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_column_width=True)
+        last_status = None
+        last_time = time.time()
 
-                # live chart: counts of each object (last 500 rows)
-                df_all = pd.read_csv(LOG_CSV)
-                recent = df_all.tail(500)
-                counts = recent['object'].value_counts().rename_axis('object').reset_index(name='count')
-                if counts.shape[0] > 0:
-                    chart_placeholder.bar_chart(data=counts.set_index('object'))
-                else:
-                    chart_placeholder.text("No detections yet")
+        while start_surveillance:
+            ret, frame = cap.read()
+            if not ret:
+                st.warning("⚠ Unable to read camera frame.")
+                break
 
-                # recent events table
-                events_df = read_events(10)
-                events_placeholder.subheader("Recent Events")
-                events_placeholder.dataframe(events_df[::-1])
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
-                # summary
-                with summary_placeholder:
-                    st.markdown("---")
-                    st.subheader("Summary")
-                    total = len(df_all)
-                    top = recent['object'].mode()[0] if not recent['object'].empty else "N/A"
-                    st.write(f"Total detections logged: **{total}**")
-                    st.write(f"Most frequent object (recent): **{top}**")
-                    st.write(f"Saved snapshots folder: `{CAPTURE_DIR}`")
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-                # small sleep to avoid hogging CPU
-                time.sleep(FPS_SLEEP)
+            if len(faces) > 0:
+                status_text.markdown("<h3 style='color:green;'>🟢 Person is under camera surveillance</h3>", unsafe_allow_html=True)
+                current_status = "present"
+            else:
+                status_text.markdown("<h3 style='color:red;'>🔴 Person has left the camera view</h3>", unsafe_allow_html=True)
+                current_status = "absent"
 
-        except Exception as e:
-            st.error(f"Camera loop error: {e}")
-        finally:
-            cap.release()
-else:
-    frame_placeholder.info("Click **Start Camera** in the sidebar to begin detection.")
+            # Log change in status
+            if current_status != last_status:
+                now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+                st.write(f"[{now_str}] Status changed: {current_status.upper()}")
+                last_status = current_status
 
-# small note + instructions
-st.markdown("### Notes")
-st.markdown("- The app logs every detection to `detections.csv` in the project folder.")
-st.markdown("- Use the sidebar to configure objects to alert on and whether to save screenshots.")
+            FRAME_WINDOW.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            time.sleep(0.05)
+
+        cap.release()
+    else:
+        st.info("☝ Tick 'Enable Surveillance Camera' to start monitoring.")
