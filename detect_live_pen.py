@@ -6,7 +6,7 @@ def my_sink(result, video_frame):
     if result.get("output_image"): # Display an image from the workflow response
         cv2.imshow("Workflow Image", result["output_image"].numpy_image)
         cv2.waitKey(1)
-    # Do something with the predictions of each frame
+    # Dosomething with the predictions of each frame
     print(result)
 
 
